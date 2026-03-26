@@ -28,7 +28,13 @@ app = FastAPI(title="IoT Seat Check-in Backend")
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.utcnow()
+
+
+def normalize_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 # =========================================================
@@ -167,8 +173,11 @@ def cleanup_expired(db) -> None:
     sessions = db.query(SeatSession).filter(SeatSession.active == True).all()
 
     for session in sessions:
+        expires_at = normalize_utc_datetime(session.expires_at)
+        reservation_start = normalize_utc_datetime(session.reservation_start)
+
         # Full session expired
-        if current >= session.expires_at:
+        if current >= expires_at:
             session.active = False
             session.status = "expired"
             continue
@@ -177,7 +186,7 @@ def cleanup_expired(db) -> None:
         if (
             session.status == "reserved_no_show"
             and session.checked_in_at is None
-            and current >= session.reservation_start + timedelta(minutes=NO_SHOW_MINUTES)
+            and current >= reservation_start + timedelta(minutes=NO_SHOW_MINUTES)
         ):
             session.active = False
             session.status = "expired"
@@ -203,7 +212,8 @@ def compute_display_state(session: Optional[SeatSession]):
         return "OPEN", None
 
     current = now_utc()
-    seconds_left = int((session.expires_at - current).total_seconds())
+    expires_at = normalize_utc_datetime(session.expires_at)
+    seconds_left = int((expires_at - current).total_seconds())
     if seconds_left < 0:
         seconds_left = 0
 
@@ -211,7 +221,7 @@ def compute_display_state(session: Optional[SeatSession]):
         return "RESERVED_NO_SHOW", seconds_left
 
     if session.status == "occupied":
-        if session.expires_at - current <= timedelta(minutes=WARNING_MINUTES):
+        if expires_at - current <= timedelta(minutes=WARNING_MINUTES):
             return "OCCUPIED_WARNING", seconds_left
         return "OCCUPIED", seconds_left
 
